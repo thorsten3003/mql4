@@ -17,14 +17,14 @@
 
 //---------- Allgemeine Einstellungen ----------
 input int Magic=101101;       // Magic number
-input bool debug=false;
+input bool debug=true;
 input bool AutoLots = True;     // if its True it will automatically calculate Lot based on Accont Balance.
 input double MaximumRisk   =2;  // in Prozent
 input double Lot = 0.1;         // feste Lotangabe wenn AutoLots=False
 input int Slippage = 3;         // Orderausführung nur wenn Maximum price slippage kleiner ist
 input int MaxOrders = 1;        // How many orders script can open on current symbol
 input int MaxSpread = 18;       // If spread is above, orders will not be opened  
-input bool OpenNurbeiNeuemBar=false; // Sollen nur Orders bei neuem Bar geöffnet werden?
+input bool OpenNurbeiNeuemBar=true; // Sollen nur Orders bei neuem Bar geöffnet werden?
 int Ticket;                     // Variable für die aktuell ausgewählte Order
 double spread;                  // MarketInfo(Symbol(),MODE_SPREAD);      Abstand des Haendlers zw. bid und ask
 double Min_Dist;                // MarketInfo(Symbol(),MODE_STOPLEVEL);   Min. distance zw. bid/ask und SL bzw. TP
@@ -62,7 +62,7 @@ int NrAussenstab=0;
 //+------------------------------------------------------------------+
 //|                                                                  |
 //+------------------------------------------------------------------+
-void OnTick() 
+void OnTick()
   { // Executed when there is new tick.
 
    Nachkommastellen=MarketInfo(Symbol(),MODE_DIGITS);
@@ -86,27 +86,16 @@ void OnTick()
 
    SLPips=((AccountBalance()/100 *MaximumRisk) *(MarketInfo(Symbol(),MODE_TICKVALUE) *(1/Lots)))*Point*10;
 
-   Comment("LastTick=",TimeToStr(TimeCurrent(),TIME_SECONDS)," | Bar Opening=",TimeToStr(Time[0],TIME_SECONDS),"\n",
-           "bid=",Bid," | ","ask=",Ask,"\n",
-           "Spread= ",spread,"\n",
-           "Nachkommastellen= ",Nachkommastellen,"\n",
-           "Point= ",pp,"\n",
-           "SLPips= ",SLPips,"\n",
-           "Tickvalue= ",MarketInfo(Symbol(),MODE_TICKVALUE),"\n",
-           "Ticksize= ",MarketInfo(Symbol(),MODE_TICKSIZE),"\n",
-           "Minlot= ",MarketInfo(Symbol(),MODE_MINLOT),"\n",
-           "min.Dist bid/ask SL,TP=",Min_Dist
-           );
-
+   infoAnzeigen();
    neuerBAR=isneuerBar();      // bestimmt ob neuer Bar beginnt            
 
-   for(int n=0; n<OrdersTotal(); n++) 
+   for(int n=0; n<OrdersTotal(); n++)
      {  // That loop search if there is opened order on current symbol.
-      if(OrderSelect ( n,SELECT_BY_POS) ) 
+      if(OrderSelect(n,SELECT_BY_POS))
         {
-         if(OrderSymbol()==Symbol()) 
+         if(OrderSymbol()==Symbol())
            {
-            if(OrderMagicNumber()==Magic) 
+            if(OrderMagicNumber()==Magic)
               {
                Ticket=OrderTicket();
                AnzahlOrderOnSymbol++;
@@ -123,7 +112,7 @@ void OnTick()
   }
 //---------------------------------------------------------------------------------
 
-int open() 
+int open()
   {
 
    double StopLoss=0;          //Stop loss level,    Ask - ( StopLoss * Point )
@@ -134,9 +123,9 @@ int open()
    int upOrdown=0;
 
 //neuer Bar
-   if(OpenNurbeiNeuemBar) 
+   if(OpenNurbeiNeuemBar)
      {     // soll nur bei neuem Bar open erfolgen?
-      if(neuerBAR==false)     // ist jetzt KEIN neuer BAR?
+      if(neuerBAR==false) // ist jetzt KEIN neuer BAR?
         {
          return(0);      // dann nix machen
         }
@@ -146,16 +135,23 @@ int open()
    upOrdown=einAustiegKursBerechnen(2); //steigt oder fällt die 3. Kerze?
                                         // - The first candle in the pattern must be a "big" candle. Open price minus close price must be > than 1,75 x the 24-period ATR".
    double oc=einAustiegHochkurs-einAustiegTiefkurs;
-   double grosseKerze=1.75*iATR(NULL,0,24,0);
+   double grosseKerze=1.2*iATR(NULL,0,14,0);
+
+   Print("einAustiegHochkurs-einAustiegTiefkurs",einAustiegHochkurs,"-",einAustiegTiefkurs,"=",oc);
+   Print("1.2*iATR=",1.2*iATR(NULL,0,14,0));
+
    if(oc>grosseKerze)
      {
+      Print("GROSSE KERZE: Diff=",oc-grosseKerze);
       if(upOrdown==1) //steigende Kerze, BUY
         {
          Kerzensignal="BUY";
+         Print("Kerzensignal=BUY");
         }
       else  if(upOrdown==2) // fallende Kerze, SELL
         {
          Kerzensignal="SELL";
+         Print("Kerzensignal=SELL");
         }
      }
 
@@ -170,7 +166,9 @@ int open()
          Kerzensignal2="BUY";
          //       } 
         }
-
+     }
+   if(Kerzensignal=="SELL")
+     {
       if(upOrdown==2) // fallende Kerze2, SELL
         {
          // if ( Low[1] < Low[2])
@@ -215,7 +213,7 @@ int open()
   }
 // ---------------------------------------------------------------------------------
 
-int close() 
+int close()
   { // Close is executed when script find opened order on current symbol
 
    switch(welcherStop) //0=kein Stop; 1=Trailstop; 2=Bewegungsstop; 3=Trail- und Bewegungsstop, 4=Bewegungs und Trailstop                
@@ -243,13 +241,12 @@ int close()
   }
 // ---------------------------------------------------------------------------------
 
-void bewegungsstop() 
+void bewegungsstop()
   {
    bool Schleife=true;
 
    modspread=NormalizeDouble((spread*Point),Digits);
    Min_Dist=NormalizeDouble((Min_Dist*Point),Digits);
-
 
    if(Bars<barsInnenstaebe) // es werden soviele Bars muessen min. im Chart sein um die Innenstaebe zu bestimmen
      {
@@ -408,7 +405,7 @@ bool calcInnenstab()
          if(debug) Print("whileloop - k="+k);
          einAustiegKursBerechnen(k);
 
-         if( (High[i] >= einAustiegHochkurs) &&
+         if((High[i] >= einAustiegHochkurs) &&
             (Low[i]  <= einAustiegTiefkurs )  )
            {
             Innenstab=true;
@@ -492,7 +489,7 @@ void ModifyStopLoss(double ldStopLoss)
   }
 //---------------- Tools
 
-bool isneuerBar() 
+bool isneuerBar()
   {
    if(prevtime==Time[0])
      {
@@ -505,5 +502,20 @@ bool isneuerBar()
      }
    if(debug) Print("Neuer Bar um "+TimeToStr(Time[0],TIME_SECONDS));
    return(neuerBAR);
+  }
+//+------------------------------------------------------------------+
+void  infoAnzeigen()
+  {
+   Comment("LastTick=",TimeToStr(TimeCurrent(),TIME_SECONDS)," | Bar Opening=",TimeToStr(Time[0],TIME_SECONDS),"\n",
+           "bid=",Bid," | ","ask=",Ask,"\n",
+           "Spread= ",spread,"\n",
+           "Nachkommastellen= ",Nachkommastellen,"\n",
+           "Point= ",pp,"\n",
+           "SLPips= ",SLPips,"\n",
+           "Tickvalue= ",MarketInfo(Symbol(),MODE_TICKVALUE),"\n",
+           "Ticksize= ",MarketInfo(Symbol(),MODE_TICKSIZE),"\n",
+           "Minlot= ",MarketInfo(Symbol(),MODE_MINLOT),"\n",
+           "min.Dist bid/ask SL,TP=",Min_Dist
+           );
   }
 //+------------------------------------------------------------------+
