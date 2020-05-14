@@ -1,0 +1,411 @@
+
+//+------------------------------------------------------------------+
+#property description  "Name: piptrader.mq4"
+#property description  ""
+#property copyright "Thorsten Stratmann"
+#property version   "101.102"
+#property link "https://github.com/thorsten3003/mql4"
+
+
+#include <stderror.mqh>
+//+------------------------------------------------------------------+
+//| Global Variables / Includes                                      |
+//+------------------------------------------------------------------+
+datetime   CurrTime = 0;
+datetime   PrevTime = 0;
+  string        Sym = "";
+     int  TimeFrame = 0;
+     int      Shift = 1;
+     int  SymDigits = 5;
+  double  SymPoints = 0.0001;
+
+//+------------------------------------------------------------------+
+//| Expert User Inputs                                               |
+//+------------------------------------------------------------------+
+extern int    Magic=101102;              // Magic number
+extern bool   debug=true;
+extern double Lot = 0.01;                // feste Lotangabe wenn AutoLots=False
+extern int    Slippage = 3;              // Orderausf�hrung nur wenn Maximum price slippage kleiner ist
+extern int    MaxOrders = 1;             // How many orders script can open on current symbol
+extern bool   OpenNurbeiNeuemBar=false;  // Sollen nur Orders bei neuem Bar ge�ffnet werden?
+extern int    BuySellBeides = 3;         // Welche Order ist erlaubt Buy=1, Sell=2, Beides=3
+extern int    anzahlKurse=3;             // Soviel Kurse werden zur berechnung benutzt
+extern double pips2Takeprofit=5;
+extern double pips2StopLoss=5;
+extern double pips2PlaceOrder=5;          // 1000 entspricht 10.00 bei 2 Nackommastellen
+
+
+int Ticket;                     // Variable f�r die aktuell ausgew�hlte Order
+double spread;                  // MarketInfo(Symbol(),MODE_SPREAD);      Abstand des Haendlers zw. bid und ask
+double Min_Dist;                // MarketInfo(Symbol(),MODE_STOPLEVEL);   Min. distance zw. bid/ask und SL bzw. TP
+datetime prevtime;              // Hilft zur Erkennung ob ein neuer Bar angefangen hat
+bool neuerBAR=true;             // Zeigt bei TRUE an das ein neuer Bar angefangen hat
+double modspread;               //
+int Nachkommastellen;           // Digits,   MarketInfo(Symbol(),MODE_DIGITS);
+double SLPips;                  // Berechneter Abstand in Pips aus dem maximalen Risiko des Money Managements
+double Lots;                    // Dieser Lotwert pro Order eingesetzt
+double pp;                      // Point, MarketInfo(Symbol(),MODE_POINT);
+double StopLoss=0;          //Stop loss level,    Ask - ( StopLoss * Point )
+double TakeProfit=0;        // Take profit level, Ask + ( TakeProfit * Point )
+
+bool bar0=true;           // bei true wird erster SL auf Bar0 gelegt, sonst Bar1
+double HighKurs=0.00;
+double LowKurs=0.00;
+int schleifenzaehler=0;
+
+//+-----------------
+double bidKurs[];
+double askKurs[];
+double Kaufkurs;
+double lastTickBid, lastTickAsk;
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int init()
+{
+RefreshRates();
+   ArrayResize(bidKurs, anzahlKurse);
+   ArrayResize(askKurs, anzahlKurse);
+   
+   Sym = Symbol();
+   TimeFrame = Period();  
+   SymPoints = MarketInfo( Sym, MODE_POINT  );
+   SymDigits = MarketInfo( Sym, MODE_DIGITS );
+   //---
+        if( SymPoints == 0.001   ) { SymPoints = 0.01;   SymDigits = 3; }
+   else if( SymPoints == 0.00001 ) { SymPoints = 0.0001; SymDigits = 5; }
+  
+   //----
+   return(0);
+}
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+int deinit() { return(0); }
+
+
+void OnTick()
+{
+RefreshRates();
+   MqlTick last_tick;
+   if(SymbolInfoTick(Symbol(),last_tick))
+   {
+      lastTickBid = last_tick.bid;
+      lastTickAsk = last_tick.ask;
+      
+      Lots=Lot;
+      Nachkommastellen=MarketInfo(Symbol(),MODE_DIGITS);
+      spread=MarketInfo(Symbol(),MODE_SPREAD);     // Abstand des Haendler zw. bid und ask
+      modspread= spread /10 * Nachkommastellen;
+      Min_Dist=MarketInfo(Symbol(),MODE_STOPLEVEL);  //Min. distance zw. bid/ask und SL bzw. TP
+      Min_Dist=NormalizeDouble((Min_Dist*Point),Digits);
+      int AnzahlOrderOnSymbol=0;
+      pp=MarketInfo(Symbol(),MODE_POINT);
+
+      infoAnzeigen();
+//----------------------Tick Arrays Fuellen  --------------------------------
+
+   for(int i=anzahlKurse-1; i>0; i--)
+   {
+    bidKurs[i] = bidKurs[i-1];
+    askKurs[i] = askKurs[i-1];
+   }
+    bidKurs[0] = lastTickBid;
+    askKurs[0] = lastTickAsk;
+
+//------------------
+
+
+
+   for(int n=0; n<OrdersTotal(); n++)
+   {
+      // That loop search if there is opened order on current symbol.
+    if(OrderSelect(n,SELECT_BY_POS))
+    {
+     if(OrderSymbol()==Symbol())
+     {
+      if(OrderMagicNumber()==Magic)
+      {
+       Ticket=OrderTicket();
+       AnzahlOrderOnSymbol++;
+       if(OrderSelect(Ticket,SELECT_BY_TICKET)==True) { close(); }
+      }
+     }
+    }
+   }
+
+   if(AnzahlOrderOnSymbol<MaxOrders)  { open(); }
+}
+}
+//+------------------------------------------------------------------+
+  int open()
+  { 
+   string Kommentar="";
+   int ticket=0;
+   bool askKursIstGroesser=False;
+   bool bidkKursIstKleiner=False;
+   
+
+ 
+// SELL 
+if(BuySellBeides == 2 || BuySellBeides == 3) 
+{
+
+ for(int s=0; s<=anzahlKurse-1; s++) 
+   {
+      
+      if(bidKurs[s] < bidKurs[s+1])
+      {
+        bidkKursIstKleiner=True;
+                           if(debug) Print("bidKurs " + s);
+      }
+      else
+      {
+      bidkKursIstKleiner=False;               
+      break;
+      }
+   }     
+
+
+        if(bidkKursIstKleiner==True)
+         {
+            if(lastTickBid  < bidKurs[anzahlKurse-1] - pips2PlaceOrder )
+            {
+             Kommentar =  bidKurs[anzahlKurse-1] + " " +  lastTickBid;
+                              if(debug) Print("Order Kommentar " +  bidKurs[anzahlKurse-1] + " " +  lastTickBid );
+             ticket=OrderSend(Symbol(),OP_SELL,Lots,lastTickBid,Slippage,0,0, Kommentar, Magic,0,clrGreen);
+             Kaufkurs= lastTickBid;
+                           if(debug) Print(Lots,lastTickBid,Slippage,StopLoss,TakeProfit);
+             if(ticket<0)
+             {
+              Print("SELL OrderSend failed with error #",GetLastError());
+              Print("Symbol:",Symbol()," OP_SELL"," Lots:",Lots,"Bid:",lastTickBid," Slippage:",Slippage," StopLoss:",StopLoss);
+            }
+            else
+              { Print("SELL OrderSend placed successfully"); }
+            }
+       }
+   }
+
+// BUY 
+if(BuySellBeides == 1 || BuySellBeides == 3) 
+{
+   for( s=0; s<=anzahlKurse-1; s++) 
+   { 
+      if(askKurs[s] > askKurs[s+1]) 
+      {
+        askKursIstGroesser=True;
+                           if(debug) Print("askKurs " + s );
+      }
+      else
+      {
+      askKursIstGroesser=False;
+      break;
+      }
+   }
+  
+  
+        if(askKursIstGroesser==True)
+        {
+         if(lastTickAsk  > askKurs[anzahlKurse-1] + pips2PlaceOrder )
+          {  
+            Kommentar = askKurs[anzahlKurse-1] + " " +  lastTickAsk ;
+                           if(debug) Print("Order Kommentar " + askKurs[anzahlKurse-1] + " " +  lastTickAsk );
+            ticket=OrderSend(Symbol(),OP_BUY,Lots,Ask,Slippage,0,0, Kommentar, Magic,0,clrGreen);
+            Kaufkurs= lastTickAsk;
+                           if(debug) Print(Lots,lastTickAsk,Slippage,StopLoss,TakeProfit);
+               if(ticket<0)
+               {
+                Print("BUY OrderSend failed with error #",GetLastError());
+                Print("Symbol:",Symbol()," OP_BUY"," Lots:",Lots,"Ask:",lastTickAsk," Slippage:",Slippage," StopLoss:",StopLoss);
+               }
+              else
+                { Print("BUY OrderSend placed successfully"); }
+           }
+        }
+}
+                     
+}
+// ---------------------------------------------------------------------------------
+
+
+void close()
+{
+// Close is executed when script find opened order on current symbol
+if(True)
+{
+
+
+ if(OrderType()==OP_BUY)
+ {
+  // TakeProfit
+  
+  if(Bid - pips2Takeprofit > Kaufkurs && Bid < bidKurs[1])  //Trail
+   {  
+      OrderClose(OrderTicket(),Lots,lastTickBid,30,Red);
+   }
+   //StoppLoss
+   else if( Bid + pips2StopLoss  < Kaufkurs )
+   { 
+      OrderClose(OrderTicket(),Lots,lastTickBid,30,Red);
+   }
+   
+}else if(OrderType()==OP_SELL)
+ {
+   // TakeProfit
+    if( Ask + pips2Takeprofit >= Kaufkurs)
+   {
+      //TRAIL
+      OrderClose(OrderTicket(),Lots,lastTickAsk,30,Red);
+   }
+   // StopLoss
+   else if( Ask - pips2StopLoss <= Kaufkurs)
+   {
+      OrderClose(OrderTicket(),Lots,lastTickAsk,30,Red);
+   }
+   
+}
+}
+}
+
+//---------------- Tools
+//+------------------------------------------------------------------+
+void  infoAnzeigen()
+{
+ Comment("LastTick=",TimeToStr(TimeCurrent(),TIME_SECONDS)," | Bar Opening=",TimeToStr(Time[0],TIME_SECONDS),"\n",
+   "bid=",lastTickBid," | ","ask=",lastTickAsk,"\n",
+   "bidDIFF=",bidKurs[anzahlKurse-1] - bidKurs[0]," | ","askDIFF=",askKurs[0] - askKurs[anzahlKurse-1] ,"\n",
+   "Spread= ",modspread,"\n",
+   "Nachkommastellen= ",Nachkommastellen,"\n",
+   "Point= ",pp,"\n",
+   "Tickvalue= ",MarketInfo(Symbol(),MODE_TICKVALUE),"\n",
+   "Ticksize= ",MarketInfo(Symbol(),MODE_TICKSIZE),"\n",
+   "Minlot= ",MarketInfo(Symbol(),MODE_MINLOT)
+   );
+}
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+
+
+
+//+------------------------------------------------------------------+
+//| Place Long Order                                                 |
+//+------------------------------------------------------------------+
+int EnterLong( string FinalSymbol, double FinalLots, string EA_Comment )
+{
+   int Ticket = -1; int err = 0; bool OrderLoop = False; int TryCount = 0;
+                    
+   while( !OrderLoop )
+   {
+      while( IsTradeContextBusy() ) { Sleep( 10 ); }
+                          
+      RefreshRates();
+      double SymAsk = NormalizeDouble( MarketInfo( FinalSymbol, MODE_ASK ), SymDigits );    
+      double SymBid = NormalizeDouble( MarketInfo( FinalSymbol, MODE_BID ), SymDigits );
+      double point=MarketInfo(Symbol(),MODE_POINT);
+                          
+Ticket=OrderSend(FinalSymbol,OP_BUYSTOP,FinalLots,SymBid+100*point,0,StopLong(SymAsk+100*point,StopLoss, SymPoints,SymDigits),TakeLong(SymBid,ProfitTarget, SymPoints,SymDigits),"some comment",MagicNumberU,0,CLR_NONE);
+    
+
+      int Err=GetLastError();
+      
+      switch (Err)
+      {
+           //---- Success
+          // case               ERR_NO_ERROR: OrderLoop = true;
+                                       //     if( OrderSelect( Ticket, SELECT_BY_TICKET ) )
+                                      //      { OrderModify( Ticket, OrderOpenPrice(), StopLong(SymBid,StopLoss, SymPoints,SymDigits), TakeLong(SymAsk,ProfitTarget,SymPoints,SymDigits), 0, CLR_NONE ); }
+                                      //      break;
+    
+           //---- Retry Error    
+           case            ERR_SERVER_BUSY:
+           case          ERR_NO_CONNECTION:
+           case          ERR_INVALID_PRICE:
+           case             ERR_OFF_QUOTES:
+           case            ERR_BROKER_BUSY:
+           case     ERR_TRADE_CONTEXT_BUSY: TryCount++; break;
+           case          ERR_PRICE_CHANGED:
+           case                ERR_REQUOTE: continue;
+    
+           //---- Fatal known Error
+           case          ERR_INVALID_STOPS: OrderLoop = true; Print( "Invalid Stops"    ); break;
+           case   ERR_INVALID_TRADE_VOLUME: OrderLoop = true; Print( "Invalid Lots"     ); break;
+           case          ERR_MARKET_CLOSED: OrderLoop = true; Print( "Market Close"     ); break;
+           case         ERR_TRADE_DISABLED: OrderLoop = true; Print( "Trades Disabled"  ); break;
+           case       ERR_NOT_ENOUGH_MONEY: OrderLoop = true; Print( "Not Enough Money" ); break;
+           case  ERR_TRADE_TOO_MANY_ORDERS: OrderLoop = true; Print( "Too Many Orders"  ); break;
+              
+           //---- Fatal Unknown Error
+           case              ERR_NO_RESULT:
+                                   default: OrderLoop = true; Print( "Unknown Error - " + Err ); break;
+           //----                        
+       }  
+       // end switch
+       if( TryCount > 10) { OrderLoop = true; }
+   }
+   //----              
+   return(Ticket);
+}
+//+------------------------------------------------------------------+
+
+//+------------------------------------------------------------------+
+//| Place Shrt Order                                                 |
+//+------------------------------------------------------------------+
+int EnterShrt( string FinalSymbol, double FinalLots, string EA_Comment )
+{
+   int Ticket = -1; int err = 0; bool OrderLoop = False; int TryCount = 0;
+                    
+   while( !OrderLoop )
+   {
+      while( IsTradeContextBusy() ) { Sleep( 10 ); }
+                          
+      RefreshRates();
+      double SymAsk = NormalizeDouble( MarketInfo( FinalSymbol, MODE_ASK ), SymDigits );    
+      double SymBid = NormalizeDouble( MarketInfo( FinalSymbol, MODE_BID ), SymDigits );
+      double point=MarketInfo(Symbol(),MODE_POINT);
+                              
+     // Ticket = OrderSend( FinalSymbol, OP_SELL, FinalLots, SymBid, 0,  0.0,0.0, EA_Comment, MagicNumber, 0, CLR_NONE );
+      Ticket=OrderSend(FinalSymbol,OP_SELLSTOP,FinalLots,SymBid-100*point,0,StopShrt(SymAsk-100*point,StopLoss, SymPoints,SymDigits),TakeShrt(SymBid,ProfitTarget, SymPoints,SymDigits),"some comment",MagicNumberD,0,CLR_NONE);
+     // ticket=OrderSend(Symbol(),OP_SELLSTOP,0.1,price-70*point,0,price+100*point,price-200*point,"some comment",mgnD,0,CLR_NONE);
+                          
+      int Err=GetLastError();
+      
+      switch (Err)
+      {
+           //---- Success
+             //    case               ERR_NO_ERROR: OrderLoop = true;
+                                                 // if( OrderSelect( Ticket, SELECT_BY_TICKET ) )
+                                                 // { OrderModify( Ticket, OrderOpenPrice(), StopShrt(SymAsk,StopLoss, SymPoints,SymDigits), TakeShrt(SymBid,ProfitTarget, SymPoints,SymDigits), 0, CLR_NONE ); }
+                                                 // break;
+    
+           //---- Retry Error    
+           case            ERR_SERVER_BUSY:
+           case          ERR_NO_CONNECTION:
+           case          ERR_INVALID_PRICE:
+           case             ERR_OFF_QUOTES:
+           case            ERR_BROKER_BUSY:
+           case     ERR_TRADE_CONTEXT_BUSY: TryCount++; break;
+           case          ERR_PRICE_CHANGED:
+           case                ERR_REQUOTE: continue;
+    
+           //---- Fatal known Error
+           case          ERR_INVALID_STOPS: OrderLoop = true; Print( "Invalid Stops"    ); break;
+           case   ERR_INVALID_TRADE_VOLUME: OrderLoop = true; Print( "Invalid Lots"     ); break;
+           case          ERR_MARKET_CLOSED: OrderLoop = true; Print( "Market Close"     ); break;
+           case         ERR_TRADE_DISABLED: OrderLoop = true; Print( "Trades Disabled"  ); break;
+           case       ERR_NOT_ENOUGH_MONEY: OrderLoop = true; Print( "Not Enough Money" ); break;
+           case  ERR_TRADE_TOO_MANY_ORDERS: OrderLoop = true; Print( "Too Many Orders"  ); break;
+              
+           //---- Fatal Unknown Error
+           case              ERR_NO_RESULT:
+                                   default: OrderLoop = true; Print( "Unknown Error - " + Err ); break;
+           //----                        
+       }  
+       // end switch
+       if( TryCount > 10) { OrderLoop = true; }
+   }
+   //----              
+   return(Ticket);
+}
+//+------------------------------------------------------------------+
